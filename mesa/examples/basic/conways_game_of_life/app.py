@@ -21,11 +21,11 @@ def post_process(ax):
 
 
 model_params = {
-    "rng": {
-        "type": "InputText",
-        "value": 42,
-        "label": "Random Seed",
-    },
+    # "rng": {
+    #     "type": "InputText",
+    #     "value": 42,
+    #     "label": "Random Seed",
+    # },
     "width": {
         "type": "SliderInt",
         "value": 50,
