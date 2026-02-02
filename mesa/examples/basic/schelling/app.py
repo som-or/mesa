@@ -59,11 +59,11 @@ def agent_portrayal(agent):
 
 
 model_params = {
-    "rng": {
-        "type": "InputText",
-        "value": 42,
-        "label": "Random Seed",
-    },
+    # "rng": {
+    #     "type": "InputText",
+    #     "value": 42,
+    #     "label": "Random Seed",
+    # },
     "density": Slider("Agent density", 0.8, 0.1, 1.0, 0.1),
     "minority_pc": Slider("Fraction minority", 0.2, 0.0, 1.0, 0.05),
     "homophily": Slider("Homophily", 0.4, 0.0, 1.0, 0.125),

@@ -30,11 +30,11 @@ def boid_draw(agent):
 
 
 model_params = {
-    "rng": {
-        "type": "InputText",
-        "value": 42,
-        "label": "Random Seed",
-    },
+    # "rng": {
+    #     "type": "InputText",
+    #     "value": 42,
+    #     "label": "Random Seed",
+    # },
     "population_size": Slider(
         label="Number of boids",
         value=100,
