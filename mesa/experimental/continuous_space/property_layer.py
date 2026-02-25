@@ -6,17 +6,68 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
-import scipy.ndimage as ndimage
+from itertools import chain
 
 # Types
 ContinuousPos = Sequence[float]
 Index = tuple[int, ...]
-MaskFn = Callable[[np.ndarray], np.ndarray]
+# MaskFn = Callable[[np.ndarray], np.ndarray]
 
+def apply_mode_at(
+    self,
+    idx_tuple: tuple[np.ndarray, ...],
+    incoming: np.ndarray,
+    *,
+    mode: str,
+    alpha: float | None,
+) -> None:
+    if mode == "set":
+        self.data[idx_tuple] = incoming
+        return
 
-def _ufunc_requires_additional_input(ufunc: np.ufunc) -> bool:
-    # numpy ufuncs expose .nin = number of inputs
-    return ufunc.nin > 1
+    if mode == "add":
+        np.add.at(self.data, idx_tuple, incoming)
+        return
+
+    if mode == "blend":
+        if alpha is None:
+            raise ValueError("alpha required for blend mode")
+
+        # Sequential semantics (important if indices repeat)
+        flat_coords = np.stack([a.ravel() for a in idx_tuple], axis=1)  # (n, ndims)
+        flat_in = incoming.ravel()
+
+        for coord, v in zip(flat_coords, flat_in):
+            coord_t = tuple(int(c) for c in coord)
+            self.data[coord_t] = (1.0 - alpha) * self.data[coord_t] + alpha * float(v)
+        return
+
+    raise ValueError(f"Unknown mode: {mode!r}")
+
+def make_offsets(self, radius: float) -> np.ndarray:
+    radius_cells = int(math.ceil(radius * self.resolution)) 
+    if radius_cells < 0:
+        raise ValueError("radius_cells must be >= 0")
+    side = 2 * radius_cells + 1
+    offsets = np.indices((side,) * self.ndims, dtype=int)
+    return offsets - radius_cells 
+
+def global_indices_from_center(
+    self,
+    center_pos: ContinuousPos,
+    offsets: np.ndarray,
+    torus: bool,
+) -> np.ndarray:
+    
+    center_idx = self.pos_to_index(center_pos)
+    target_indices = [] 
+    for d, off in enumerate(offsets): 
+        idx = center_idx[d] + off 
+        if torus: 
+            idx = idx % self.shape[d] 
+            target_indices.append(idx.astype(int)) 
+    
+    return tuple(target_indices)
 
 
 class PropertyLayer:
@@ -52,8 +103,8 @@ class PropertyLayer:
 
         self.name = name
         self.bounds = np.asanyarray(bounds, dtype=float)
-        # if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
-        #     raise ValueError("bounds must have shape (ndims, 2).")
+        if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
+            raise ValueError("bounds must have shape (ndims, 2).")
 
         self.ndims = int(self.bounds.shape[0])
         self.resolution = float(resolution)
@@ -61,8 +112,8 @@ class PropertyLayer:
         mins = self.bounds[:, 0]
         maxs = self.bounds[:, 1]
 
-        # if not np.all(maxs > mins):
-        #     raise ValueError("Each bounds row must satisfy max > min.")
+        if not np.all(maxs > mins):
+            raise ValueError("Each bounds row must satisfy max > min.")
 
         self.size = maxs - mins  # size of continuous space 
 
@@ -97,8 +148,8 @@ class PropertyLayer:
     ) -> "PropertyLayer":
         
         bounds_arr = np.asanyarray(bounds, dtype=float)
-        # if bounds_arr.ndim != 2 or bounds_arr.shape[1] != 2:
-        #     raise ValueError("bounds must have shape (ndims, 2).")
+        if bounds_arr.ndim != 2 or bounds_arr.shape[1] != 2:
+            raise ValueError("bounds must have shape (ndims, 2).")
 
         size = bounds_arr[:, 1] - bounds_arr[:, 0]
         if data.ndim != bounds_arr.shape[0]:
@@ -174,47 +225,48 @@ class PropertyLayer:
     #         raise ValueError("condition must return a boolean mask with the same shape as data.")
     #     self.data[mask] = value
 
-    def modify_cells(
-        self,
-        operation: Callable | np.ufunc,
-        value: Any = None,
-        condition: MaskFn | None = None,
-    ) -> None:
-        """Modify cells using an operation (ufunc or callable), optionally masked."""
-        if condition is None:
-            mask = slice(None)
-            target = self.data
-        else:
-            mask_arr = condition(self.data)
-            if mask_arr.shape != self.data.shape or mask_arr.dtype != bool:
-                raise ValueError("condition must return a boolean mask with the same shape as data.")
-            mask = mask_arr
-            target = self.data[mask]
+    # def modify_cells(
+    #     self,
+    #     operation: Callable | np.ufunc,
+    #     value: Any = None,
+    #     condition: MaskFn | None = None,
+    # ) -> None:
+    #     """Modify cells using an operation (ufunc or callable), optionally masked."""
+    #     if condition is None:
+    #         mask = slice(None)
+    #         target = self.data
+    #     else:
+    #         mask_arr = condition(self.data)
+    #         if mask_arr.shape != self.data.shape or mask_arr.dtype != bool:
+    #             raise ValueError("condition must return a boolean mask with the same shape as data.")
+    #         mask = mask_arr
+    #         target = self.data[mask]
 
-        if isinstance(operation, np.ufunc):
-            if _ufunc_requires_additional_input(operation):
-                if value is None:
-                    raise ValueError("This ufunc requires an additional input value.")
-                self.data[mask] = operation(target, value)
-            else:
-                self.data[mask] = operation(target)
-        else:
-            # Expect operation to accept ndarray and return ndarray (vectorized). No np.vectorize in core path.
-            out = operation(target) if value is None else operation(target, value)
-            self.data[mask] = out
+    #     if isinstance(operation, np.ufunc):
+    #         if _ufunc_requires_additional_input(operation):
+    #             if value is None:
+    #                 raise ValueError("This ufunc requires an additional input value.")
+    #             self.data[mask] = operation(target, value)
+    #         else:
+    #             self.data[mask] = operation(target)
+    #     else:
+    #         # Expect operation to accept ndarray and return ndarray (vectorized). No np.vectorize in core path.
+    #         out = operation(target) if value is None else operation(target, value)
+    #         self.data[mask] = out
 
-    def select_cells(self, condition: MaskFn, return_list: bool = True):
-        """Select cells by a value-based mask condition."""
-        mask = condition(self.data)
-        if mask.shape != self.data.shape or mask.dtype != bool:
-            raise ValueError("condition must return a boolean mask with the same shape as data.")
-        if return_list:
-            return list(zip(*np.where(mask)))
-        return mask
+    # def select_cells(self, condition: MaskFn, return_list: bool = True):
+    #     """Select cells by a value-based mask condition."""
+    #     mask = condition(self.data)
+    #     if mask.shape != self.data.shape or mask.dtype != bool:
+    #         raise ValueError("condition must return a boolean mask with the same shape as data.")
+    #     if return_list:
+    #         return list(zip(*np.where(mask)))
+    #     return mask
 
     def aggregate(self, operation: Callable[[np.ndarray], Any]) -> Any:
         """Aggregate over the layer data (e.g., np.sum, np.mean)."""
         return operation(self.data)
+    
 
     def deposit(
         self,
@@ -229,7 +281,6 @@ class PropertyLayer:
             - callable: value(pos) computed per position
             - sequence: one value per position
         mode
-            How to combine with existing cell values:
             - "set": overwrite cell value with new value
             - "add": add new value to existing cell value
             - "blend": weighted average: new = (1-alpha)*old + alpha*incoming
@@ -243,9 +294,6 @@ class PropertyLayer:
 
         if not positions:
             return
-        
-        indices = [self.pos_to_index(p) for p in positions]
-
 
         if callable(value):
             values = np.asarray([float(value(p)) for p in positions], dtype=float)
@@ -256,47 +304,15 @@ class PropertyLayer:
             if len(values) != len(positions):
                 raise ValueError("value length doesn't match pos length")
 
-        # for one position
-        if len(indices) == 1:
-            idx = indices[0]
-            v = float(values[0])
-            if mode == "set":
-                self.data[idx] = v
-            elif mode == "add":
-                self.data[idx] += v
-            elif mode == "blend":
-                if alpha is None:
-                    raise ValueError("alpha must be provided for mode='blend'")
-                if not (0.0 <= alpha <= 1.0):
-                    raise ValueError("alpha must be in [0, 1]")
-                self.data[idx] = (1.0 - alpha) * self.data[idx] + alpha * v
-            else:
-                raise ValueError(f"Unknown mode: {mode!r}")
-            return
+        
+        indices = np.asarray([self.pos_to_index(p) for p in positions], dtype=int)
+        idx_tuple = tuple(indices[:, d] for d in range(indices.shape[1])) #(xs, ys)
 
-        # list of positions 
-        indices_arr = np.asarray(indices, dtype=int)  # shape: (n, ndims)
-        idx_tuple = tuple(indices_arr[:, d] for d in range(indices_arr.shape[1])) #(xs, ys)
+        
+        apply_mode_at(idx_tuple, values, mode=mode, alpha=alpha)
 
-        if mode == "set":
-            self.data[idx_tuple] = values
-            return
+        return 
 
-        if mode == "add":
-            np.add.at(self.data, idx_tuple, values)
-            return
-
-        if mode == "blend":
-            if alpha is None:
-                raise ValueError("alpha must be provided for mode='blend'")
-            if not (0.0 <= alpha <= 1.0):
-                raise ValueError("alpha must be in [0, 1]")
-
-            for idx, v in zip(indices, values):
-                self.data[idx] = (1.0 - alpha) * self.data[idx] + alpha * float(v)
-            return
-
-        raise ValueError(f"Unknown mode: {mode!r}")
     
     def deposit_splat(
     self,
@@ -320,15 +336,10 @@ class PropertyLayer:
         if spread < 0:
             raise ValueError("spread must be >= 0")
 
-        if isinstance(pos, ContinuousPos):
-            positions = [pos]
-        else:
-            positions = list(pos)
-
+        positions = [pos] if isinstance(pos, ContinuousPos) else list(pos)
         if not positions:
             return
 
-        # Build values
         if callable(value):
             values = np.asarray([float(value(p)) for p in positions], dtype=float)
         elif isinstance(value, (int, float, np.integer, np.floating)):
@@ -341,87 +352,35 @@ class PropertyLayer:
         if spread == 0:
             self.deposit(pos, value, mode, alpha)
 
-        # offset window [-spread .. spread]
-        side = 2 * spread + 1
-        offsets = np.indices((side,) * self.ndims, dtype=int)
-        for d in range(self.ndims):
-            offsets[d] -= spread
+        spread_cells=spread* self.resolution
+        weights= self.kernel_matrix(kernel_type=kernel, radius= spread_cells)
+        offsets=make_offsets(spread)
 
         deltas = np.stack(offsets, axis=-1) / self.resolution
         dist2 = np.sum(deltas * deltas, axis=-1)
 
-        # Compute kernel weights
-        if kernel == "gaussian":
-            sigma = spread / self.resolution if spread > 0 else 1.0
-            weights = np.exp(-dist2 / (2 * sigma * sigma))
-        elif kernel == "linear":
-            d = np.sqrt(dist2)
-            R = spread / self.resolution
-            weights = np.clip(1 - d / R, 0.0, 1.0)
-        elif kernel == "epanechnikov":
-            R = spread / self.resolution
-            weights = np.clip(1 - dist2 / (R * R), 0.0, 1.0)
-        else:
-            raise ValueError(f"Unknown kernel: {kernel}")
-
-        total = weights.sum()
-        if total > 0:
-            weights = weights / total
-
         # Apply splat for each position
         for p, v in zip(positions, values):
-            center_idx = self.pos_to_index(p)
-
-            # Map offsets to global indices
-            target_idxs = []
-            for d in range(self.ndims):
-                idx = center_idx[d] + offsets[d]
-                if torus:
-                    idx %= self.shape[d]
-                target_idxs.append(idx)
+            idx=global_indices_from_center(p, offsets, torus)
 
             if torus:
-                contrib = v * weights
-                if mode == "set":
-                    self.data[tuple(target_idxs)] = contrib
-                elif mode == "add":
-                    self.data[tuple(target_idxs)] += contrib
-                elif mode == "blend":
-                    if alpha is None:
-                        raise ValueError("alpha required for blend mode")
-                    current = self.data[tuple(target_idxs)]
-                    self.data[tuple(target_idxs)] = (
-                        (1 - alpha) * current + alpha * contrib
-                    )
-                else:
-                    raise ValueError(f"Unknown mode: {mode}")
+                idx_tuple = tuple(idx[d].astype(int) for d in range(self.ndims))
+                incoming = float(v) * weights
+                apply_mode_at(idx_tuple, incoming, mode=mode, alpha=alpha)
             else:
-                # Mask out-of-bounds
                 in_bounds = np.ones_like(dist2, dtype=bool)
                 for d in range(self.ndims):
                     in_bounds &= (
-                        (target_idxs[d] >= 0) & (target_idxs[d] < self.shape[d])
+                        (idx[d] >= 0) & (idx[d] < self.shape[d])
                     )
-
                 clipped_idxs = [
-                    target_idxs[d][in_bounds].astype(int)
+                    idx[d][in_bounds].astype(int)
                     for d in range(self.ndims)
                 ]
-                contrib = (v * weights)[in_bounds]
+                clipped_idxs_tuple=tuple(clipped_idxs)
+                incoming = (v * weights)[in_bounds]
+                apply_mode_at(clipped_idxs_tuple, incoming, mode=mode, alpha=alpha)
 
-                if mode == "set":
-                    self.data[tuple(clipped_idxs)] = contrib
-                elif mode == "add":
-                    np.add.at(self.data, tuple(clipped_idxs), contrib)
-                elif mode == "blend":
-                    if alpha is None:
-                        raise ValueError("alpha required for blend mode")
-                    current = self.data[tuple(clipped_idxs)]
-                    self.data[tuple(clipped_idxs)] = (
-                        (1 - alpha) * current + alpha * contrib
-                    )
-                else:
-                    raise ValueError(f"Unknown mode: {mode}")
 
     def kernel_matrix(self, kernel_type: str, radius: float):
         side = 2 * radius + 1
@@ -448,92 +407,38 @@ class PropertyLayer:
         total = weights.sum()
         if total > 0:
             weights = weights / total
-        
-        
+
+        return weights
+    
+    
+    def get_neighborhood_mask( 
+            self, 
+            center_pos: ContinuousPos, 
+            radius: float, 
+            torus: bool = False, 
+            ) -> np.ndarray: 
+            
+            if radius < 0: raise ValueError("radius must be >= 0") 
+
+            mask = np.zeros(self.shape, dtype=bool) 
+            
+            offsets=make_offsets(radius)
+            radius2 = float(radius) ** 2 
+
+            deltas_cont = np.stack(offsets, axis=-1) / self.resolution # shape (side, side, ndims) 
+            dist2 = np.sum(deltas_cont**2, axis=-1) # x**2+ y**2 
+            local_inside = dist2 <= radius2 # local mask onto global mask 
+
+            target_indices=global_indices_from_center(center_pos, offsets, torus)
+            
+            mask[target_indices] = local_inside 
+
+            return mask
+
     
 
-    def get_neighborhood_mask(
-        self,
-        center_pos: ContinuousPos,
-        radius: float,
-        torus: bool = False,
-    ) -> np.ndarray:
-        
-        if radius < 0:
-            raise ValueError("radius must be >= 0")
-
-        
-        r_cells = int(math.ceil(radius * self.resolution))
-        center_idx = self.pos_to_index(center_pos)
-
-        mask = np.zeros(self.shape, dtype=bool)
-
-        side = 2 * r_cells + 1
-        offsets = np.indices((side,) * self.ndims, dtype=int)
-        # [0..side-1] -> shift to [-r..r]
-        for d in range(self.ndims):
-            offsets[d] -= r_cells
-
-        
-        radius2 = float(radius) ** 2
-
-        # grid-offsets to continuous-offsets
-        deltas_cont = np.stack(offsets, axis=-1) / self.resolution  # shape (side, side, ndims)
-        dist2 = np.sum(deltas_cont**2, axis=-1)  # x**2+ y**2
-        local_inside = dist2 <= radius2  
-
-        # local mask onto global mask
-        target_indices = []
-        for d, off in enumerate(offsets):
-            idx = center_idx[d] + off
-            if torus:
-                idx = idx % self.shape[d]
-            target_indices.append(idx.astype(int))
-
-
-        mask[tuple(target_indices)] = local_inside
-        return mask
-
-    # --- Optional diffusion (global) ---
-    def diffuse(
-        self,
-        distance: float,
-        diffusion_rate: float = 1.0,
-        *,
-        torus: bool = False,
-    ) -> None:
-        """Diffuse the layer using a Gaussian filter.
-
-        Args:
-            distance: diffusion radius in continuous units.
-            diffusion_rate: blending factor in [0,1]. 1.0 = fully replaced by diffused.
-            torus: if True, wrap boundaries; else reflect.
-        """
-        if distance < 0:
-            raise ValueError("distance must be >= 0")
-        if not (0.0 <= diffusion_rate <= 1.0):
-            raise ValueError("diffusion_rate must be in [0, 1].")
-
-        # Convert continuous distance to sigma in cells.
-        discrete_radius = distance * self.resolution
-        sigma = discrete_radius / 3.0  # ~99% within 3 sigma
-        if sigma <= 0:
-            return
-
-        mode = "wrap" if torus else "reflect"
-        diffused = ndimage.gaussian_filter(self._data, sigma=sigma, mode=mode)
-
-        self._data[:] = (self._data * (1.0 - diffusion_rate)) + (diffused * diffusion_rate)
-
-
 class HasPropertyLayers:
-    """Mixin for ContinuousSpace-like classes to manage raster PropertyLayers.
-
-    Assumptions:
-    - The host class has `dimensions` in Mesa ContinuousSpace format: shape (ndims, 2).
-    - The host class may have `.torus` (bool).
-    """
-
+    
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._property_layers: dict[str, PropertyLayer] = {}
@@ -545,6 +450,7 @@ class HasPropertyLayers:
         default_value: Any = 0.0,
         dtype: type | np.dtype = float,
     ) -> PropertyLayer:
+        
         layer = PropertyLayer(
             name=name,
             bounds=self.dimensions,
@@ -556,17 +462,19 @@ class HasPropertyLayers:
         return layer
 
     def add_property_layer(self, layer: PropertyLayer) -> None:
-        if layer.name in self._property_layers:
-            raise ValueError(f"Property layer {layer.name} already exists.")
-
-        # Require same bounds as the space (PR-friendly default).
         space_bounds = np.asanyarray(self.dimensions, dtype=float)
         if space_bounds.shape != layer.bounds.shape or not np.allclose(space_bounds, layer.bounds):
             raise ValueError("Layer bounds must match the space bounds.")
+        
+        if layer.name in self._property_layers:
+            raise ValueError(f"Property layer {layer.name} already exists.")
 
         self._property_layers[layer.name] = layer
 
     def remove_property_layer(self, name: str) -> None:
+        if name not in self._properties:
+            raise KeyError(f"No property named '{name}'.")
+        
         del self._property_layers[name]
 
     def get_property_layer(self, name: str) -> PropertyLayer:
@@ -583,20 +491,7 @@ class HasPropertyLayers:
         idx = layer.pos_to_index(pos, clamp=True)
         layer.data[idx] = value
 
-    # Parity forwarding for bulk ops
-    def set_property(self, property_name: str, value: Any, condition: MaskFn | None = None) -> None:
-        self._property_layers[property_name].set_cells(value, condition)
 
-    def modify_property(
-        self,
-        property_name: str,
-        operation: Callable | np.ufunc,
-        value: Any = None,
-        condition: MaskFn | None = None,
-    ) -> None:
-        self._property_layers[property_name].modify_cells(operation, value, condition)
-
-    # Optional sugar: neighborhood mask via a specific property layer (resolution matters!)
     def get_neighborhood_mask(
         self,
         property_name: str,
@@ -609,7 +504,7 @@ class HasPropertyLayers:
         use_torus = bool(self.torus) if torus is None else bool(torus)
         return layer.get_neighborhood_mask(center_pos, radius, torus=use_torus)
 
-    # Optional attribute-style access (same UX as discrete, without collisions guarding)
+    
     def __getattr__(self, name: str) -> Any:
         try:
             return self._property_layers[name]
