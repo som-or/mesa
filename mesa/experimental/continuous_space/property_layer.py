@@ -13,62 +13,6 @@ ContinuousPos = Sequence[float]
 Index = tuple[int, ...]
 # MaskFn = Callable[[np.ndarray], np.ndarray]
 
-def apply_mode_at(
-    self,
-    idx_tuple: tuple[np.ndarray, ...],
-    incoming: np.ndarray,
-    *,
-    mode: str,
-    alpha: float | None,
-) -> None:
-    if mode == "set":
-        self.data[idx_tuple] = incoming
-        return
-
-    if mode == "add":
-        np.add.at(self.data, idx_tuple, incoming)
-        return
-
-    if mode == "blend":
-        if alpha is None:
-            raise ValueError("alpha required for blend mode")
-
-        # Sequential semantics (important if indices repeat)
-        flat_coords = np.stack([a.ravel() for a in idx_tuple], axis=1)  # (n, ndims)
-        flat_in = incoming.ravel()
-
-        for coord, v in zip(flat_coords, flat_in):
-            coord_t = tuple(int(c) for c in coord)
-            self.data[coord_t] = (1.0 - alpha) * self.data[coord_t] + alpha * float(v)
-        return
-
-    raise ValueError(f"Unknown mode: {mode!r}")
-
-def make_offsets(self, radius: float) -> np.ndarray:
-    radius_cells = int(math.ceil(radius * self.resolution)) 
-    if radius_cells < 0:
-        raise ValueError("radius_cells must be >= 0")
-    side = 2 * radius_cells + 1
-    offsets = np.indices((side,) * self.ndims, dtype=int)
-    return offsets - radius_cells 
-
-def global_indices_from_center(
-    self,
-    center_pos: ContinuousPos,
-    offsets: np.ndarray,
-    torus: bool,
-) -> np.ndarray:
-    
-    center_idx = self.pos_to_index(center_pos)
-    target_indices = [] 
-    for d, off in enumerate(offsets): 
-        idx = center_idx[d] + off 
-        if torus: 
-            idx = idx % self.shape[d] 
-            target_indices.append(idx.astype(int)) 
-    
-    return tuple(target_indices)
-
 
 class PropertyLayer:
     """A raster property layer over a continuous domain.
@@ -100,11 +44,16 @@ class PropertyLayer:
     ) -> None:
         if resolution <= 0:
             raise ValueError("resolution(cells per unit) must be > 0.")
+        
 
         self.name = name
         self.bounds = np.asanyarray(bounds, dtype=float)
-        if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
-            raise ValueError("bounds must have shape (ndims, 2).")
+        if not(self.bounds.shape==(2,) or self.bounds.shape==(2,2)):
+            raise ValueError("bounds must be either[width, height] or [[xmin, xmax], [ymin, ymax]]")
+        
+        if self.bounds.shape==(2,):
+            self.bounds = np.vstack(([0, 0], self.bounds)).T
+
 
         self.ndims = int(self.bounds.shape[0])
         self.resolution = float(resolution)
@@ -133,7 +82,7 @@ class PropertyLayer:
             raise TypeError(
                 f"Default value {default_value} is incompatible with dtype={getattr(dtype, '__name__', str(dtype))}."
             ) from e
-
+        self.default_value= default_value
         self._data = np.full(self.shape, default_value, dtype=dtype)
 
    
@@ -287,13 +236,12 @@ class PropertyLayer:
         alpha
             Used only for mode="blend". Must be in [0, 1].
         """
-        if isinstance(pos, ContinuousPos):
-            positions = [pos]
-        else:
-            positions = list(pos)
-
-        if not positions:
+        
+        positions = np.array(pos)
+        if not positions.size:
             return
+        if positions.ndim==1:
+            positions.resize((1,2))
 
         if callable(value):
             values = np.asarray([float(value(p)) for p in positions], dtype=float)
@@ -309,7 +257,7 @@ class PropertyLayer:
         idx_tuple = tuple(indices[:, d] for d in range(indices.shape[1])) #(xs, ys)
 
         
-        apply_mode_at(idx_tuple, values, mode=mode, alpha=alpha)
+        self.apply_mode_at(idx_tuple, values, mode=mode, alpha=alpha)
 
         return 
 
@@ -321,7 +269,7 @@ class PropertyLayer:
     mode: str = "set",
     alpha: float | None = None,
     kernel: str = "gaussian",
-    spread: int = 1,
+    spread: float = 1,
     torus: bool = False,
 ) -> None:
         """
@@ -336,9 +284,11 @@ class PropertyLayer:
         if spread < 0:
             raise ValueError("spread must be >= 0")
 
-        positions = [pos] if isinstance(pos, ContinuousPos) else list(pos)
-        if not positions:
+        positions = np.array(pos, dtype=float)
+        if not positions.size:
             return
+        if positions.ndim==1:
+            positions.resize((1,2))
 
         if callable(value):
             values = np.asarray([float(value(p)) for p in positions], dtype=float)
@@ -351,22 +301,23 @@ class PropertyLayer:
 
         if spread == 0:
             self.deposit(pos, value, mode, alpha)
+            return
 
-        spread_cells=spread* self.resolution
-        weights= self.kernel_matrix(kernel_type=kernel, radius= spread_cells)
-        offsets=make_offsets(spread)
+        weights= self.kernel_matrix(kernel_type=kernel, radius= spread)
+        offsets=self.make_offsets(spread)
+        
 
         deltas = np.stack(offsets, axis=-1) / self.resolution
         dist2 = np.sum(deltas * deltas, axis=-1)
 
         # Apply splat for each position
         for p, v in zip(positions, values):
-            idx=global_indices_from_center(p, offsets, torus)
+            idx=self.global_indices_from_center(p, offsets, torus)
 
             if torus:
                 idx_tuple = tuple(idx[d].astype(int) for d in range(self.ndims))
                 incoming = float(v) * weights
-                apply_mode_at(idx_tuple, incoming, mode=mode, alpha=alpha)
+                self.apply_mode_at(idx_tuple, incoming, mode=mode, alpha=alpha)
             else:
                 in_bounds = np.ones_like(dist2, dtype=bool)
                 for d in range(self.ndims):
@@ -379,61 +330,137 @@ class PropertyLayer:
                 ]
                 clipped_idxs_tuple=tuple(clipped_idxs)
                 incoming = (v * weights)[in_bounds]
-                apply_mode_at(clipped_idxs_tuple, incoming, mode=mode, alpha=alpha)
+                self.apply_mode_at(clipped_idxs_tuple, incoming, mode=mode, alpha=alpha)
 
 
     def kernel_matrix(self, kernel_type: str, radius: float):
-        side = 2 * radius + 1
+        radius_cell = int(math.ceil(radius * self.resolution)) 
+        side = 2 * radius_cell + 1
         offsets = np.indices((side,) * self.ndims, dtype=int)
         for d in range(self.ndims):
-            offsets[d] -= radius
+            offsets[d] -= radius_cell
 
         deltas = np.stack(offsets, axis=-1) / self.resolution
         dist2 = np.sum(deltas * deltas, axis=-1)
 
         if kernel_type == "gaussian":
-            sigma = radius / self.resolution if radius> 0 else 1.0
+            sigma = radius_cell / self.resolution if radius_cell> 0 else 1.0
             weights = np.exp(-dist2 / (2 * sigma * sigma))
+            #to make gaussian splat circular as well: need to truncate the values outside circle 
+            weights[dist2 > radius* radius] = 0.0
         elif kernel_type == "linear":
             d = np.sqrt(dist2)
-            R = radius  / self.resolution
-            weights = np.clip(1 - d / R, 0.0, 1.0)
+            weights = np.clip(1 - d / radius, 0.0, 1.0)
         elif kernel_type == "epanechnikov":
-            R = radius / self.resolution
-            weights = np.clip(1 - dist2 / (R * R), 0.0, 1.0)
+            weights = np.clip(1 - dist2 / (radius * radius), 0.0, 1.0)
         else:
             raise ValueError(f"Unknown kernel: {kernel_type}")
 
-        total = weights.sum()
-        if total > 0:
-            weights = weights / total
+        maximum = weights.max()
+        if maximum > 0:
+            weights = weights / maximum
 
         return weights
     
     
     def get_neighborhood_mask( 
-            self, 
-            center_pos: ContinuousPos, 
-            radius: float, 
-            torus: bool = False, 
-            ) -> np.ndarray: 
-            
-            if radius < 0: raise ValueError("radius must be >= 0") 
+        self, 
+        center_pos: ContinuousPos, 
+        radius: float, 
+        torus: bool = False, 
+        ) -> np.ndarray: 
+        
+        if radius < 0: raise ValueError("radius must be >= 0") 
 
-            mask = np.zeros(self.shape, dtype=bool) 
-            
-            offsets=make_offsets(radius)
-            radius2 = float(radius) ** 2 
+        mask = np.zeros(self.shape, dtype=bool) 
+        
+        offsets=self.make_offsets(radius)
+        radius2 = float(radius) ** 2 
 
-            deltas_cont = np.stack(offsets, axis=-1) / self.resolution # shape (side, side, ndims) 
-            dist2 = np.sum(deltas_cont**2, axis=-1) # x**2+ y**2 
-            local_inside = dist2 <= radius2 # local mask onto global mask 
+        deltas_cont = np.stack(offsets, axis=-1) / self.resolution # shape (side, side, ndims) 
+        dist2 = np.sum(deltas_cont**2, axis=-1) # x**2+ y**2 
+        local_inside = dist2 <= radius2 # local mask onto global mask 
 
-            target_indices=global_indices_from_center(center_pos, offsets, torus)
-            
-            mask[target_indices] = local_inside 
+        target_indices=self.global_indices_from_center(center_pos, offsets, torus)
+        
+        mask[target_indices] = local_inside 
 
-            return mask
+        return mask
+    
+    def decay(self,T: int, type: str= "linear", k: float | None= None):
+        """
+        type:
+            -"exponential" decay
+            -"linear" decay
+        T: total time step the value dies in
+        """
+        if type == "linear":
+            np.subtract(self._data, (self._data - self.default_value) / T, out=self._data)
+        elif type == "exponential":
+            if k==None: raise ValueError("need decay rate: k for exponential decay")
+            np.multiply(self._data, np.exp(-k / T), out=self._data)
+        else:
+            raise ValueError("unknown decay type, choose from: exponential or linear")
+
+        np.maximum(self._data, self.default_value, out=self._data)
+    
+    def apply_mode_at(
+        self,
+        idx_tuple: tuple[np.ndarray, ...],
+        incoming: np.ndarray,
+        *,
+        mode: str,
+        alpha: float | None,
+    ) -> None:
+        if mode == "set":
+            self.data[idx_tuple] = incoming
+            return
+
+        if mode == "add":
+            np.add.at(self.data, idx_tuple, incoming)
+            return
+
+        if mode == "blend":
+            if alpha is None:
+                raise ValueError("alpha required for blend mode")
+
+            # Sequential semantics (important if indices repeat)
+            flat_coords = np.stack([a.ravel() for a in idx_tuple], axis=1)  # (n, ndims)
+            flat_in = incoming.ravel()
+
+            for coord, v in zip(flat_coords, flat_in):
+                coord_t = tuple(int(c) for c in coord)
+                self.data[coord_t] = (1.0 - alpha) * self.data[coord_t] + alpha * float(v)
+            return
+
+        raise ValueError(f"Unknown mode: {mode!r}")
+
+    def make_offsets(self, radius: float) -> np.ndarray:
+        radius_cells = int(math.ceil(radius * self.resolution)) 
+        if radius_cells < 0:
+            raise ValueError("radius_cells must be >= 0")
+        side = 2 * radius_cells + 1
+        offsets = np.indices((side,) * self.ndims, dtype=int)
+        return offsets - radius_cells 
+
+    def global_indices_from_center(
+        self,
+        center_pos: ContinuousPos,
+        offsets: np.ndarray,
+        torus: bool,
+    ) -> np.ndarray:
+        
+        center_idx = self.pos_to_index(center_pos)
+
+        target_indices = [] 
+        for d, off in enumerate(offsets): 
+            idx = center_idx[d] + off 
+            if torus: 
+                idx = idx % self.shape[d] 
+
+            target_indices.append(idx.astype(int)) 
+        
+        return tuple(target_indices)
 
     
 
@@ -445,6 +472,7 @@ class HasPropertyLayers:
 
     def create_property_layer(
         self,
+        space: Any,
         name: str,
         resolution: float = 1.0,
         default_value: Any = 0.0,
@@ -453,16 +481,16 @@ class HasPropertyLayers:
         
         layer = PropertyLayer(
             name=name,
-            bounds=self.dimensions,
+            bounds=space.dimensions,
             resolution=resolution,
             default_value=default_value,
             dtype=dtype,
         )
-        self.add_property_layer(layer)
+        self.add_property_layer(layer, space)
         return layer
 
-    def add_property_layer(self, layer: PropertyLayer) -> None:
-        space_bounds = np.asanyarray(self.dimensions, dtype=float)
+    def add_property_layer(self, layer: PropertyLayer, space: Any) -> None:
+        space_bounds = np.asanyarray(space.dimensions, dtype=float)
         if space_bounds.shape != layer.bounds.shape or not np.allclose(space_bounds, layer.bounds):
             raise ValueError("Layer bounds must match the space bounds.")
         
@@ -481,28 +509,28 @@ class HasPropertyLayers:
         return self._property_layers[name]
 
     # Convenience get/set at continuous positions
-    def get_value(self, property_name: str, pos: ContinuousPos) -> Any:
-        layer = self._property_layers[property_name]
-        idx = layer.pos_to_index(pos, clamp=True)
-        return layer.data[idx]
+    # def get_value(self, property_name: str, pos: ContinuousPos) -> Any:
+    #     layer = self._property_layers[property_name]
+    #     idx = layer.pos_to_index(pos, clamp=True)
+    #     return layer.data[idx]
 
-    def set_value(self, property_name: str, pos: ContinuousPos, value: Any) -> None:
-        layer = self._property_layers[property_name]
-        idx = layer.pos_to_index(pos, clamp=True)
-        layer.data[idx] = value
+    # def set_value(self, property_name: str, pos: ContinuousPos, value: Any) -> None:
+    #     layer = self._property_layers[property_name]
+    #     idx = layer.pos_to_index(pos, clamp=True)
+    #     layer.data[idx] = value
 
 
-    def get_neighborhood_mask(
-        self,
-        property_name: str,
-        center_pos: ContinuousPos,
-        radius: float,
-        *,
-        torus: bool | None = None,
-    ) -> np.ndarray:
-        layer = self._property_layers[property_name]
-        use_torus = bool(self.torus) if torus is None else bool(torus)
-        return layer.get_neighborhood_mask(center_pos, radius, torus=use_torus)
+    # def get_neighborhood_mask(
+    #     self,
+    #     property_name: str,
+    #     center_pos: ContinuousPos,
+    #     radius: float,
+    #     *,
+    #     torus: bool | None = None,
+    # ) -> np.ndarray:
+    #     layer = self._property_layers[property_name]
+    #     use_torus = bool(self.torus) if torus is None else bool(torus)
+    #     return layer.get_neighborhood_mask(center_pos, radius, torus=use_torus)
 
     
     def __getattr__(self, name: str) -> Any:
