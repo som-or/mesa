@@ -11,6 +11,7 @@ from itertools import chain
 # Types
 ContinuousPos = Sequence[float]
 Index = tuple[int, ...]
+# MaskFn = Callable[[np.ndarray], np.ndarray]
 
 
 class PropertyLayer:
@@ -27,23 +28,10 @@ class PropertyLayer:
     @property
     def data(self) -> np.ndarray:
         return self._data
-    
-    @property
-    def ndim(self) -> int:
-        return self._data.ndim
-    
-    @property
-    def size(self) -> np.ndarray:
-        mins=self.bounds[:, 0]
-        maxs = self.bounds[:, 1]
-        return maxs - mins
-    @property
-    def shape(self) -> tuple:
-        return tuple(int(math.ceil(s * self.resolution)) for s in self.size)
 
-    
     @data.setter
     def data(self, value) -> None:
+        # same pattern as discrete Mesa PropertyLayer
         self._data[:] = value
 
     def __init__(
@@ -53,14 +41,12 @@ class PropertyLayer:
         resolution: float = 1.0,
         default_value: Any = 0.0,
         dtype: type | np.dtype = float,
-        torus: bool =False
     ) -> None:
         if resolution <= 0:
             raise ValueError("resolution(cells per unit) must be > 0.")
         
 
         self.name = name
-        self.torus=torus
         self.bounds = np.asanyarray(bounds, dtype=float)
         if not(self.bounds.shape==(2,) or self.bounds.shape==(2,2)):
             raise ValueError("bounds must be either[width, height] or [[xmin, xmax], [ymin, ymax]]")
@@ -69,16 +55,21 @@ class PropertyLayer:
             self.bounds = np.vstack(([0, 0], self.bounds)).T
 
 
-        # self.ndim= int(self.bounds.shape[0])
+        self.ndims = int(self.bounds.shape[0])
         self.resolution = float(resolution)
 
         mins = self.bounds[:, 0]
         maxs = self.bounds[:, 1]
+
         if not np.all(maxs > mins):
             raise ValueError("Each bounds row must satisfy max > min.")
 
+        self.size = maxs - mins  # size of continuous space 
+
         # Raster shape: ceil(size * cells_per_unit)
-        # self.shape: tuple[int, ...] = tuple(int(math.ceil(s * self.resolution)) for s in self.size)
+        self.shape: tuple[int, ...] = tuple(int(math.ceil(s * self.resolution)) for s in self.size)
+
+        # same as discrete version)
         try:
             if dtype(default_value) != default_value:
                 warnings.warn(
@@ -94,17 +85,6 @@ class PropertyLayer:
         self.default_value= default_value
         self._data = np.full(self.shape, default_value, dtype=dtype)
 
-    def __getitem__(self, idx):
-        return self._data[idx]
-
-    def __setitem__(self, idx, value):
-        self._data[idx] = value
-    
-    def __array__(self, dtype=None):
-        return np.asarray(self._data, dtype=dtype)
-        #example use case
-        # np.sum(space.pheromone)
-        # np.mean(space.pheromone)
    
     @classmethod
     def from_data(
@@ -114,7 +94,6 @@ class PropertyLayer:
         *,
         bounds: Any,
         resolution: float | None = None,
-        torus: bool =False
     ) -> "PropertyLayer":
         
         bounds_arr = np.asanyarray(bounds, dtype=float)
@@ -123,38 +102,30 @@ class PropertyLayer:
         
         if bounds_arr.shape==(2,):
             bounds_arr = np.vstack(([0, 0], bounds_arr)).T
+        
+        # bounds_arr = np.asanyarray(bounds, dtype=float)
+        # if bounds_arr.ndim != 2 or bounds_arr.shape[1] != 2:
+        #     raise ValueError("bounds must have shape (ndims, 2).")
 
         size = bounds_arr[:, 1] - bounds_arr[:, 0]
         if data.ndim != bounds_arr.shape[0]:
             raise ValueError("data.ndim must match number of dimensions in bounds.")
 
-        inferred = np.array(data.shape, dtype=float) / size
-
-        if not np.allclose(inferred, inferred[0]):
-            raise ValueError(
-                f"Cannot infer a single scalar resolution: inferred per-axis={inferred}. "
-                "Pass an explicit per-axis resolution (if you support it) or fix bounds/data."
-            )
-
-        inferred_res = float(inferred[0])
-
-        if resolution is not None:
-            if not np.isclose(float(resolution), inferred_res):
+        if resolution is None:
+            inferred = np.array(data.shape, dtype=float) / size
+            if not np.allclose(inferred[1], inferred[0]):
                 raise ValueError(
-                    f"resolution={resolution} disagrees with inferred resolution={inferred_res} "
-                    f"from data.shape={data.shape} and bounds size={size}."
+                    f"Non-uniform inferred resolution across axes: {inferred}. "
+                    "Provide an explicit resolution to avoid ambiguity."
                 )
-            res = float(resolution)
-        else:
-            res = inferred_res
+            resolution = float(inferred[0])
             
         layer = cls(
             name=name,
             bounds=bounds_arr,
-            resolution=float(res),
+            resolution=float(resolution),
             default_value=0,
             dtype=data.dtype.type,
-            torus=torus
         )
         if layer.shape != tuple(data.shape):
             raise ValueError(
@@ -164,49 +135,89 @@ class PropertyLayer:
         layer.data = data.copy()
         return layer
 
-    def set_bounds(self, bounds: Any) -> None:
-        bounds = np.asanyarray(bounds, dtype=float)
-        if bounds.shape == (2,):
-            bounds = np.vstack(([0, 0], bounds)).T
-        if bounds.shape != (self.ndim, 2):
-            raise ValueError("bounds shape mismatch")
-
-        # Must keep same size to avoid changing shape/data meaning
-        new_size = bounds[:, 1] - bounds[:, 0]
-        if not np.allclose(new_size, self.size):
-            raise ValueError("New bounds must have same size as existing bounds")
-
-        self.bounds = bounds
     
     def pos_to_index(self, pos: ContinuousPos,) -> Index:
 
         p = np.asanyarray(pos, dtype=float)
-        if p.shape != (self.ndim,):
-            raise ValueError(f"pos must have length {self.ndim}.")
+        if p.shape != (self.ndims,):
+            raise ValueError(f"pos must have length {self.ndims}.")
 
         mins = self.bounds[:, 0]
         raw = np.floor((p - mins) * self.resolution).astype(int)
 
-        if self.torus:
-            raw = raw % np.array(self.shape)
-        else:
-            if np.any(raw < 0) or np.any(raw >= np.array(self.shape)):
-                raise IndexError(...)
-        return tuple(raw.astype(int))
+        if np.any(raw < 0) or np.any(raw >= np.array(self.shape)):
+            raise IndexError("Position maps outside layer grid")
+        
+        for i, dim in enumerate(self.shape):
+            if raw[i] < 0:
+                raw[i] = 0
+            elif raw[i] >= dim:
+                raw[i] = dim - 1
+
+        return tuple(int(x) for x in raw)
         
     def index_to_pos(self, index: Sequence[int], *, center: bool = True) -> tuple[float, ...]:
         """
         If center=True, returns the center of the raster cell; otherwise returns cells upper left corner.
         """
         idx = np.asanyarray(index, dtype=float)
-        if idx.shape != (self.ndim,):
-            raise ValueError(f"index must have length {self.ndim}.")
+        if idx.shape != (self.ndims,):
+            raise ValueError(f"index must have length {self.ndims}.")
 
         mins = self.bounds[:, 0]
         offset = 0.5 if center else 0.0
         pos = mins + (idx + offset) / self.resolution
         return tuple(float(x) for x in pos)
-    
+
+
+    # def set_cells(self, value: Any, condition: MaskFn | None = None) -> None:
+    #     """Set cells to a value (optionally where a mask condition holds)."""
+    #     if condition is None:
+    #         self.data[:] = value
+    #         return
+
+    #     mask = condition(self.data)
+    #     if mask.shape != self.data.shape or mask.dtype != bool:
+    #         raise ValueError("condition must return a boolean mask with the same shape as data.")
+    #     self.data[mask] = value
+
+    # def modify_cells(
+    #     self,
+    #     operation: Callable | np.ufunc,
+    #     value: Any = None,
+    #     condition: MaskFn | None = None,
+    # ) -> None:
+    #     """Modify cells using an operation (ufunc or callable), optionally masked."""
+    #     if condition is None:
+    #         mask = slice(None)
+    #         target = self.data
+    #     else:
+    #         mask_arr = condition(self.data)
+    #         if mask_arr.shape != self.data.shape or mask_arr.dtype != bool:
+    #             raise ValueError("condition must return a boolean mask with the same shape as data.")
+    #         mask = mask_arr
+    #         target = self.data[mask]
+
+    #     if isinstance(operation, np.ufunc):
+    #         if _ufunc_requires_additional_input(operation):
+    #             if value is None:
+    #                 raise ValueError("This ufunc requires an additional input value.")
+    #             self.data[mask] = operation(target, value)
+    #         else:
+    #             self.data[mask] = operation(target)
+    #     else:
+    #         # Expect operation to accept ndarray and return ndarray (vectorized). No np.vectorize in core path.
+    #         out = operation(target) if value is None else operation(target, value)
+    #         self.data[mask] = out
+
+    # def select_cells(self, condition: MaskFn, return_list: bool = True):
+    #     """Select cells by a value-based mask condition."""
+    #     mask = condition(self.data)
+    #     if mask.shape != self.data.shape or mask.dtype != bool:
+    #         raise ValueError("condition must return a boolean mask with the same shape as data.")
+    #     if return_list:
+    #         return list(zip(*np.where(mask)))
+    #     return mask
 
     def aggregate(self, operation: Callable[[np.ndarray], Any]) -> Any:
         """Aggregate over the layer data (e.g., np.sum, np.mean)."""
@@ -236,12 +247,8 @@ class PropertyLayer:
         positions = np.array(pos)
         if not positions.size:
             return
-        if positions.ndim == 1:
-            if positions.shape[0] != self.ndim:
-                raise ValueError("pos dimension mismatch")
-            positions = positions.reshape(1, self.ndim)
-        elif positions.shape[1] != self.ndim:
-            raise ValueError("pos dimension mismatch")
+        if positions.ndim==1:
+            positions.resize((1,2))
 
         if callable(value):
             values = np.asarray([float(value(p)) for p in positions], dtype=float)
@@ -269,7 +276,8 @@ class PropertyLayer:
     mode: str = "set",
     alpha: float | None = None,
     kernel: str = "gaussian",
-    spread: float = 1
+    spread: float = 1,
+    torus: bool = False,
 ) -> None:
         """
         Deposit values onto the grid with local spatial spreading (splat).
@@ -277,21 +285,17 @@ class PropertyLayer:
         kernel
             One of {"gaussian", "linear", "epanechnikov"}.
         spread
-            Radius.
+            Radius in grid cells (integer).
         """
-        torus=self.torus
+
         if spread < 0:
             raise ValueError("spread must be >= 0")
 
         positions = np.array(pos, dtype=float)
         if not positions.size:
             return
-        if positions.ndim == 1:
-            if positions.shape[0] != self.ndim:
-                raise ValueError("pos dimension mismatch")
-            positions = positions.reshape(1, self.ndim)
-        elif positions.shape[1] != self.ndim:
-            raise ValueError("pos dimension mismatch")
+        if positions.ndim==1:
+            positions.resize((1,2))
 
         if callable(value):
             values = np.asarray([float(value(p)) for p in positions], dtype=float)
@@ -310,28 +314,37 @@ class PropertyLayer:
         offsets=self.make_offsets(spread)
         
 
-        # deltas = np.stack(offsets, axis=-1) / self.resolution
-        # dist2 = np.sum(deltas * deltas, axis=-1)
+        deltas = np.stack(offsets, axis=-1) / self.resolution
+        dist2 = np.sum(deltas * deltas, axis=-1)
 
         # Apply splat for each position
         for p, v in zip(positions, values):
+            idx=self.global_indices_from_center(p, offsets, torus)
 
-            idx_tuple, bound_mask=self.global_indices_from_center(p, offsets, torus)
-            incoming = float(v) * weights
-
-            self.apply_mode_at(
-                idx_tuple=tuple(idx[bound_mask] for idx in idx_tuple), 
-                incoming=incoming[bound_mask], 
-                mode=mode, 
-                alpha=alpha
-            )
+            if torus:
+                idx_tuple = tuple(idx[d].astype(int) for d in range(self.ndims))
+                incoming = float(v) * weights
+                self.apply_mode_at(idx_tuple, incoming, mode=mode, alpha=alpha)
+            else:
+                in_bounds = np.ones_like(dist2, dtype=bool)
+                for d in range(self.ndims):
+                    in_bounds &= (
+                        (idx[d] >= 0) & (idx[d] < self.shape[d])
+                    )
+                clipped_idxs = [
+                    idx[d][in_bounds].astype(int)
+                    for d in range(self.ndims)
+                ]
+                clipped_idxs_tuple=tuple(clipped_idxs)
+                incoming = (v * weights)[in_bounds]
+                self.apply_mode_at(clipped_idxs_tuple, incoming, mode=mode, alpha=alpha)
 
 
     def kernel_matrix(self, kernel_type: str, radius: float):
         radius_cell = int(math.ceil(radius * self.resolution)) 
         side = 2 * radius_cell + 1
-        offsets = np.indices((side,) * self.ndim, dtype=int)
-        for d in range(self.ndim):
+        offsets = np.indices((side,) * self.ndims, dtype=int)
+        for d in range(self.ndims):
             offsets[d] -= radius_cell
 
         deltas = np.stack(offsets, axis=-1) / self.resolution
@@ -361,10 +374,9 @@ class PropertyLayer:
         self, 
         center_pos: ContinuousPos, 
         radius: float, 
-        include_center: bool = True
+        torus: bool = False, 
         ) -> np.ndarray: 
-
-        torus=self.torus
+        
         if radius < 0: raise ValueError("radius must be >= 0") 
 
         mask = np.zeros(self.shape, dtype=bool) 
@@ -376,11 +388,9 @@ class PropertyLayer:
         dist2 = np.sum(deltas_cont**2, axis=-1) # x**2+ y**2 
         local_inside = dist2 <= radius2 # local mask onto global mask 
 
-        target_indices, bound_mask=self.global_indices_from_center(center_pos, offsets, torus)
+        target_indices=self.global_indices_from_center(center_pos, offsets, torus)
         
-        mask[target_indices] = local_inside & bound_mask
-        if not include_center:
-            mask[self.pos_to_index(center_pos)]= False
+        mask[target_indices] = local_inside 
 
         return mask
     
@@ -421,7 +431,7 @@ class PropertyLayer:
             if alpha is None:
                 raise ValueError("alpha required for blend mode")
 
-            # sequential-important if indices repeat)
+            # Sequential semantics (important if indices repeat)
             flat_coords = np.stack([a.ravel() for a in idx_tuple], axis=1)  # (n, ndims)
             flat_in = incoming.ravel()
 
@@ -437,7 +447,7 @@ class PropertyLayer:
         if radius_cells < 0:
             raise ValueError("radius_cells must be >= 0")
         side = 2 * radius_cells + 1
-        offsets = np.indices((side,) * self.ndim, dtype=int)
+        offsets = np.indices((side,) * self.ndims, dtype=int)
         return offsets - radius_cells 
 
     def global_indices_from_center(
@@ -445,27 +455,19 @@ class PropertyLayer:
         center_pos: ContinuousPos,
         offsets: np.ndarray,
         torus: bool,
-    ) -> tuple[np.ndarray, ...]:
+    ) -> np.ndarray:
         
         center_idx = self.pos_to_index(center_pos)
-        valid_mask=None
 
         target_indices = [] 
         for d, off in enumerate(offsets): 
             idx = center_idx[d] + off 
             if torus: 
                 idx = idx % self.shape[d] 
-            else:
-                dim_valid = (idx >= 0) & (idx < self.shape[d])
-                valid_mask = dim_valid if valid_mask is None else (valid_mask & dim_valid)
-          
-            target_indices.append(idx.astype(int))
 
-        if self.torus:
-            valid_mask = np.ones_like(target_indices[0], dtype=bool)
-
+            target_indices.append(idx.astype(int)) 
         
-        return tuple(target_indices), valid_mask
+        return tuple(target_indices)
 
     
 
@@ -473,11 +475,11 @@ class HasPropertyLayers:
     
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._property_layers: dict[str, PropertyLayer] = {}
 
-        self._property: dict[str, PropertyLayer] = {}
-
-    def create_property(
+    def create_property_layer(
         self,
+        space: Any,
         name: str,
         resolution: float = 1.0,
         default_value: Any = 0.0,
@@ -486,49 +488,62 @@ class HasPropertyLayers:
         
         layer = PropertyLayer(
             name=name,
-            bounds=self.dimensions,
+            bounds=space.dimensions,
             resolution=resolution,
             default_value=default_value,
             dtype=dtype,
-            torus=self.torus
         )
-        self._attach_property(layer)
-        return layer
-    def add_property(self, name:str, array:np.ndarray):
-        layer=PropertyLayer.from_data(
-            name=name,
-            data=array,
-            bounds=self.dimensions,
-            resolution=None,
-            torus=self.torus
-        )
-        self._attach_property(layer)
+        self.add_property_layer(layer, space)
         return layer
 
-    def _attach_property(self, layer: PropertyLayer) -> None:
-        space_size = np.asanyarray(self.size, dtype=float)
-        if space_size.shape != layer.size.shape or not np.allclose(space_size, layer.size):
-            raise ValueError("Layer bounds size must match the space bounds size.")
+    def add_property_layer(self, layer: PropertyLayer, space: Any) -> None:
+        space_bounds = np.asanyarray(space.dimensions, dtype=float)
+        if space_bounds.shape != layer.bounds.shape or not np.allclose(space_bounds, layer.bounds):
+            raise ValueError("Layer bounds must match the space bounds.")
         
-        if layer.name in self._property:
+        if layer.name in self._property_layers:
             raise ValueError(f"Property layer {layer.name} already exists.")
 
-        layer.set_bounds(self.dimensions)
-        layer.torus= self.torus
-        self._property[layer.name] = layer
+        self._property_layers[layer.name] = layer
 
-    def remove_property(self, name: str) -> None:
-        if name not in self._property:
+    def remove_property_layer(self, name: str) -> None:
+        if name not in self._property_layers:
             raise KeyError(f"No property named '{name}'.")
         
-        del self._property[name]
+        del self._property_layers[name]
+
+    def get_property_layer(self, name: str) -> PropertyLayer:
+        return self._property_layers[name]
+
+    # Convenience get/set at continuous positions
+    # def get_value(self, property_name: str, pos: ContinuousPos) -> Any:
+    #     layer = self._property_layers[property_name]
+    #     idx = layer.pos_to_index(pos, clamp=True)
+    #     return layer.data[idx]
+
+    # def set_value(self, property_name: str, pos: ContinuousPos, value: Any) -> None:
+    #     layer = self._property_layers[property_name]
+    #     idx = layer.pos_to_index(pos, clamp=True)
+    #     layer.data[idx] = value
+
+
+    # def get_neighborhood_mask(
+    #     self,
+    #     property_name: str,
+    #     center_pos: ContinuousPos,
+    #     radius: float,
+    #     *,
+    #     torus: bool | None = None,
+    # ) -> np.ndarray:
+    #     layer = self._property_layers[property_name]
+    #     use_torus = bool(self.torus) if torus is None else bool(torus)
+    #     return layer.get_neighborhood_mask(center_pos, radius, torus=use_torus)
+
     
     def __getattr__(self, name: str) -> Any:
-        layers = self.__dict__.get("_property")
-    
-        if layers is not None and name in layers:
-            return layers[name]
-        
-        raise AttributeError(
-            f"'{type(self).__name__}' object has no attribute or property layer '{name}'"
-        )
+        try:
+            return self._property_layers[name]
+        except KeyError as e:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no property layer called '{name}'"
+            ) from e

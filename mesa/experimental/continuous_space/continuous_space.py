@@ -9,10 +9,12 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial.distance import cdist
 
+from mesa.experimental.continuous_space.property_layer import PropertyLayer, HasPropertyLayers
+
 from mesa.agent import Agent, AgentSet
 
 
-class ContinuousSpace:
+class ContinuousSpace(HasPropertyLayers):
     """Continuous space where each agent can have an arbitrary position."""
 
     @property
@@ -65,6 +67,7 @@ class ContinuousSpace:
 
 
         """
+        super().__init__()
         if random is None:
             warnings.warn(
                 "Random number generator not specified, this can make models non-reproducible. Please pass a random number generator explicitly",

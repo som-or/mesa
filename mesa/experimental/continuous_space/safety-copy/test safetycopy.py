@@ -32,7 +32,7 @@ class AgentT(ContinuousSpaceAgent):
         # )
         self.position+=tuple([1,1])
 
-class ModelT(Model):
+class ModelT(Model, HasPropertyLayers):
     def __init__(self, rng, width, height, n_agents):
         super().__init__()
 
@@ -43,8 +43,9 @@ class ModelT(Model):
             n_agents=n_agents
         )
 
-        self.space.create_property(
+        self.create_property_layer(
             name="step_count",
+            space=self.space,
             resolution=2,
             default_value=0,
             dtype=float
@@ -55,60 +56,64 @@ class ModelT(Model):
     def step(self):
         self.agents.shuffle_do("step")
         pos=self.space.agent_positions
-        self.space.step_count.deposit_splat(
+        self.step_count.deposit_splat(
             pos=pos, 
             value=2,
             mode="add",
             kernel="gaussian",
-            spread=1
+            spread=1,
+            torus=False
         )
-        self.space.step_count.decay(
+        self.step_count.decay(
             T=100,
             type="exponential",
             k=1.0
         )
 
-        if "randomL" in self.space._property:
-            self.space.randomL.data+=np.indices((80, 200)).sum(axis=0)
-            mask=self.space.randomL.get_neighborhood_mask(pos[0], 3, True)
-            self.space.randomL.data[mask]=0
+        if "randomL" in self._property_layers:
+            self.randomL.data[:]+=np.indices((200, 200)).sum(axis=0)
+            mask=self.randomL.get_neighborhood_mask(pos[0], 3, True)
+            self.randomL.data[mask]=0
 
 
 
 if __name__ == "__main__":
 
-    d=np.random.rand(20, 50)
+    d=np.random.rand(50, 50)
 
     model=ModelT(
         rng=None,
-        width=20,
+        width=50,
         height=50,
         n_agents=5
     )
 
     layer2=PropertyLayer(
         name="randomL",
-        bounds=(20,50),
+        bounds=(50,50),
         resolution=4,
-        default_value=2
+        default_value=2,
+        dtype=float
+    )
+    layer3=PropertyLayer.from_data(
+        name="from_data",
+        data=d,
+        bounds=[[0,50], [0,50]],
+        resolution=1
     )
 
-    # layer3=PropertyLayer.from_data(
-    #     name="from_data",
-    #     data=d,
-    #     bounds=[[0,50], [0,50]],
-    #     resolution=1
-    # )
-
     model.run_for(100)
-    plotheatmap(model.space.step_count.data, "step_count")
-    model.space._attach_property(layer2)
+    plotheatmap(model.step_count.data, "step_count")
+    model.add_property_layer(layer2, model.space)
     model.run_for(5)
-    plotheatmap(model.space.randomL.data, "randomL")
-    model.space.add_property("from_data", d)
-    plotheatmap(model.space.from_data.data, "from-data")
+    plotheatmap(model.randomL.data, "randomL")
+    model.add_property_layer(layer3, model.space)
+    plotheatmap(model.from_data.data, "from-data")
 
     # print(model.step_count.aggregate(operation=np.mean))
+
+
+
 
     # print(model._property_layers)
     # model.remove_property_layer("step_count")
