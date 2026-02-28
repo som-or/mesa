@@ -8,6 +8,14 @@ import numpy as np
 from mesa.model import Model 
 
 
+from mesa.visualization import SolaraViz, SpaceRenderer
+from mesa.visualization.components import AgentPortrayalStyle,  PropertyLayerStyle
+import solara
+from matplotlib.figure import Figure
+from mesa.visualization.utils import update_counter
+
+
+
 def plotheatmap(m, name):
     plt.imshow(m, cmap='viridis', interpolation='nearest')
     plt.colorbar(label='Kernel Weight')
@@ -30,7 +38,7 @@ class AgentT(ContinuousSpaceAgent):
         # self.position = tuple(
         #     np.random.uniform(low, high) for (low, high) in self.space.dimensions
         # )
-        self.position+=tuple([1,1])
+        self.position+=tuple([0.5,0.5])
 
 class ModelT(Model):
     def __init__(self, rng, width, height, n_agents):
@@ -45,10 +53,12 @@ class ModelT(Model):
 
         self.space.create_property(
             name="step_count",
-            resolution=2,
+            resolution=5,
             default_value=0,
             dtype=float
         )
+        d=np.random.rand(10, 10)
+        self.space.add_property("from_data", d)
 
         AgentT.create_agents(model=self, n=n_agents)
 
@@ -60,7 +70,7 @@ class ModelT(Model):
             value=2,
             mode="add",
             kernel="gaussian",
-            spread=1
+            spread=0.5
         )
         self.space.step_count.decay(
             T=100,
@@ -68,8 +78,11 @@ class ModelT(Model):
             k=1.0
         )
 
+        d=np.random.rand(10, 10)
+        self.space.from_data.data=d
+
         if "randomL" in self.space._property:
-            self.space.randomL.data+=np.indices((80, 200)).sum(axis=0)
+            self.space.randomL.data+=np.indices((200, 200)).sum(axis=0)
             mask=self.space.randomL.get_neighborhood_mask(pos[0], 3, True)
             self.space.randomL.data[mask]=0
 
@@ -77,18 +90,18 @@ class ModelT(Model):
 
 if __name__ == "__main__":
 
-    d=np.random.rand(20, 50)
+    d=np.random.rand(10, 10)
 
     model=ModelT(
         rng=None,
-        width=20,
-        height=50,
+        width=10,
+        height=10,
         n_agents=5
     )
 
     layer2=PropertyLayer(
         name="randomL",
-        bounds=(20,50),
+        bounds=(10,10),
         resolution=4,
         default_value=2
     )
@@ -100,15 +113,52 @@ if __name__ == "__main__":
     #     resolution=1
     # )
 
-    model.run_for(100)
-    plotheatmap(model.space.step_count.data, "step_count")
-    model.space._attach_property(layer2)
-    model.run_for(5)
-    plotheatmap(model.space.randomL.data, "randomL")
-    model.space.add_property("from_data", d)
-    plotheatmap(model.space.from_data.data, "from-data")
+    # model.run_for(100)
+    # plotheatmap(model.space.step_count.data, "step_count")
+    # model.space._attach_property(layer2)
+    # model.run_for(5)
+    # plotheatmap(model.space.randomL.data, "randomL")
+    # model.space.add_property("from_data", d)
+    # plotheatmap(model.space.from_data.data, "from-data")
 
     # print(model.step_count.aggregate(operation=np.mean))
+
+    def agent_portrayal(agent):
+        return AgentPortrayalStyle(size=10, marker='o', color='red')
+        
+
+    def propertylayer_portrayal(layer):
+        if layer.name=="step_count":
+            return PropertyLayerStyle(color='blue', alpha=0.8, colorbar=True)
+        if layer.name=="from_data":
+            return PropertyLayerStyle(color='green', alpha=0.5, colorbar=True)
+        
+        
+        
+    model_params={
+        "rng":None,
+        "width":10,
+        "height":10,
+        "n_agents":5
+    }
+
+    renderer = (
+        SpaceRenderer(
+            model,
+            backend="altair",
+        )
+    )
+    renderer.draw_agents(agent_portrayal)
+    renderer.draw_propertylayer(propertylayer_portrayal)
+
+    page = SolaraViz(
+        model,
+        renderer,
+        model_params=model_params,
+        name="Actice Walker Model",
+    )
+
+    page
 
     # print(model._property_layers)
     # model.remove_property_layer("step_count")
