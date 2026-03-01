@@ -364,16 +364,33 @@ class AltairBackend(AbstractRenderer):
                 continue
 
             data = layer.data.astype(float) if layer.data.dtype == bool else layer.data
+            sx, sy = space.width, space.height
+            nx, ny = data.shape
+
+            if (nx, ny) == (sx, sy):
+                res_x, res_y = 1, 1
+            else:
+                # Accept integer multiples, e.g. (sx*2, sy*2)
+                if nx % sx != 0 or ny % sy != 0:
+                    warnings.warn(
+                        f"Layer {layer_name} dimensions ({data.shape}) are not a multiple of "
+                        f"space dimensions ({sx}, {sy}). Skipping.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                res_x, res_y = nx // sx, ny // sy
+
 
             # Check dimensions
-            if (space.width, space.height) != data.shape:
-                warnings.warn(
-                    f"Layer {layer_name} dimensions ({data.shape}) "
-                    f"don't match space dimensions ({space.width}, {space.height})",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                continue
+            # if (space.width, space.height) != data.shape:
+            #     warnings.warn(
+            #         f"Layer {layer_name} dimensions ({data.shape}) "
+            #         f"don't match space dimensions ({space.width}, {space.height})",
+            #         UserWarning,
+            #         stacklevel=2,
+            #     )
+            #     continue
 
             # Get portrayal parameters
             color = portrayal.color
@@ -382,13 +399,25 @@ class AltairBackend(AbstractRenderer):
             vmin = portrayal.vmin if portrayal.vmin is not None else np.min(data)
             vmax = portrayal.vmax if portrayal.vmax is not None else np.max(data)
 
+            i = np.repeat(np.arange(nx), ny)             # 0..nx-1 repeated
+            j = np.tile(np.arange(ny), nx)              # 0..ny-1 tiled
+
             df = pd.DataFrame(
                 {
-                    "x": np.repeat(np.arange(data.shape[0]), data.shape[1]),
-                    "y": np.tile(np.arange(data.shape[1] - 1, -1, -1), data.shape[0]),
+                    "x0": i / res_x,
+                    "x1": (i + 1) / res_x,
+                    "y0": j / res_y,
+                    "y1": (j+1) / res_y,
                     "value": data.flatten(),
                 }
             )
+            # df = pd.DataFrame(
+            #     {
+            #         "x": np.repeat(np.arange(data.shape[0]), data.shape[1]),
+            #         "y": np.tile(np.arange(data.shape[1] - 1, -1, -1), data.shape[0]),
+            #         "value": data.flatten(),
+            #     }
+            # )
 
             if color:
                 # For a single color gradient, we define the range from transparent to solid.
@@ -416,8 +445,10 @@ class AltairBackend(AbstractRenderer):
                 alt.Chart(df)
                 .mark_rect(opacity=opacity)
                 .encode(
-                    x=alt.X("x:O", axis=None),
-                    y=alt.Y("y:O", axis=None),
+                    x=alt.X("x0:Q", axis=None, scale=alt.Scale(domain=[0, sx])),
+                    x2="x1:Q",
+                    y=alt.Y("y0:Q", axis=None, scale=alt.Scale(domain=[0, sy])),
+                    y2="y1:Q",
                     color=alt.Color(
                         "value:Q",
                         scale=color_scale,

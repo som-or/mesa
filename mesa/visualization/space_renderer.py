@@ -340,7 +340,10 @@ class SpaceRenderer:
             property_layers = self.space.properties
         except AttributeError:
             # new style spaces
-            property_layers = self.space._mesa_property_layers
+            if hasattr(self.space, "_mesa_property_layers"):
+                property_layers = self.space._mesa_property_layers
+            elif hasattr(self.space, "_property"):
+                property_layers = self.space._property
 
         # Convert portrayal to callable if needed
         if isinstance(self.propertylayer_portrayal, dict):

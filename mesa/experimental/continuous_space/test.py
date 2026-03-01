@@ -19,7 +19,7 @@ from mesa.visualization.utils import update_counter
 def plotheatmap(m, name):
     plt.imshow(m, cmap='viridis', interpolation='nearest')
     plt.colorbar(label='Kernel Weight')
-    plt.title('Kernel Matrix Heatmap')
+    plt.title(name)
     plt.xlabel('X')
     plt.ylabel('Y')
     plt.savefig(name) 
@@ -52,39 +52,39 @@ class ModelT(Model):
         )
 
         self.space.create_property(
-            name="step_count",
+            name="trace_layer",
             resolution=5,
             default_value=0,
             dtype=float
         )
         d=np.random.rand(10, 10)
-        self.space.add_property("from_data", d)
+        self.space.add_property("random_layer", d)
 
         AgentT.create_agents(model=self, n=n_agents)
 
     def step(self):
         self.agents.shuffle_do("step")
         pos=self.space.agent_positions
-        self.space.step_count.deposit_splat(
+        self.space.trace_layer.deposit_splat(
             pos=pos, 
             value=2,
             mode="add",
             kernel="gaussian",
             spread=0.5
         )
-        self.space.step_count.decay(
+        self.space.trace_layer.decay(
             T=100,
             type="exponential",
             k=1.0
         )
 
         d=np.random.rand(10, 10)
-        self.space.from_data.data=d
+        self.space.random_layer.data=d
 
-        if "randomL" in self.space._property:
-            self.space.randomL.data+=np.indices((200, 200)).sum(axis=0)
-            mask=self.space.randomL.get_neighborhood_mask(pos[0], 3, True)
-            self.space.randomL.data[mask]=0
+        if "buffer_layer" in self.space._property:
+            self.space.buffer_layer.data+=np.indices((40, 40)).sum(axis=0)
+            mask=self.space.buffer_layer.get_neighborhood_mask(pos[0], 1.5, True)
+            self.space.buffer_layer.data[mask]=0
 
 
 
@@ -100,93 +100,63 @@ if __name__ == "__main__":
     )
 
     layer2=PropertyLayer(
-        name="randomL",
+        name="buffer_layer",
         bounds=(10,10),
         resolution=4,
         default_value=2
     )
 
-    # layer3=PropertyLayer.from_data(
-    #     name="from_data",
+    # layer3=PropertyLayer.random_layer(
+    #     name="random_layer",
     #     data=d,
-    #     bounds=[[0,50], [0,50]],
+    #     bounds=[[0,10], [0,10]],
     #     resolution=1
     # )
 
-    # model.run_for(100)
-    # plotheatmap(model.space.step_count.data, "step_count")
-    # model.space._attach_property(layer2)
-    # model.run_for(5)
-    # plotheatmap(model.space.randomL.data, "randomL")
-    # model.space.add_property("from_data", d)
-    # plotheatmap(model.space.from_data.data, "from-data")
+    model.run_for(100)
+    plotheatmap(model.space.trace_layer.data, "trace_layer")
+    model.space._attach_property(layer2)
+    model.run_for(5)
+    plotheatmap(model.space.buffer_layer.data, "buffer_layer")
+    plotheatmap(model.space.random_layer.data, "random_layer")
 
-    # print(model.step_count.aggregate(operation=np.mean))
+    print(model.space.trace_layer.aggregate(operation=np.mean))
 
-    def agent_portrayal(agent):
-        return AgentPortrayalStyle(size=10, marker='o', color='red')
+    # def agent_portrayal(agent):
+    #     return AgentPortrayalStyle(size=10, marker='o', color='red')
         
 
-    def propertylayer_portrayal(layer):
-        if layer.name=="step_count":
-            return PropertyLayerStyle(color='blue', alpha=0.8, colorbar=True)
-        if layer.name=="from_data":
-            return PropertyLayerStyle(color='green', alpha=0.5, colorbar=True)
+    # def propertylayer_portrayal(layer):
+    #     if layer.name=="trace_layer":
+    #         return PropertyLayerStyle(color='blue', alpha=0.8, colorbar=True)
+    #     if layer.name=="random_layer":
+    #         return PropertyLayerStyle(color='green', alpha=0.5, colorbar=True)
         
         
         
-    model_params={
-        "rng":None,
-        "width":10,
-        "height":10,
-        "n_agents":5
-    }
+    # model_params={
+    #     "rng":None,
+    #     "width":10,
+    #     "height":10,
+    #     "n_agents":5
+    # }
 
-    renderer = (
-        SpaceRenderer(
-            model,
-            backend="altair",
-        )
-    )
-    renderer.draw_agents(agent_portrayal)
-    renderer.draw_propertylayer(propertylayer_portrayal)
-
-    page = SolaraViz(
-        model,
-        renderer,
-        model_params=model_params,
-        name="Actice Walker Model",
-    )
-
-    page
-
-    # print(model._property_layers)
-    # model.remove_property_layer("step_count")
-    # print("---")
-    # print(model._property_layers)
-
-    # layer=PropertyLayer(
-    #     name="trial",
-    #     bounds=(100,100),
-    #     resolution=2,
-    #     default_value=1,
-    #     dtype=float
-    # )   
-
-
-    # layer.deposit_splat(
-    #     pos=[(1.2,66.8), (91.7, 55.4), (32, 78)], 
-    #     value=5, 
-    #     mode="add",
-    #     alpha=None, 
-    #     kernel="gaussian",
-    #     spread=10, 
-    #     torus=False
+    # renderer = (
+    #     SpaceRenderer(
+    #         model,
+    #         backend="altair",
+    #     )
     # )
-    # mask=layer.get_neighborhood_mask((78.9,25.4), 8, False)
-    # T=5
-    # for _ in range (T):
-    #     layer.decay(T, "exponential", 2)
-    #     plotheatmap(layer.data)
-    #     time.sleep(5)
+    # renderer.draw_agents(agent_portrayal)
+    # renderer.draw_propertylayer(propertylayer_portrayal)
 
+    # page = SolaraViz(
+    #     model,
+    #     renderer,
+    #     model_params=model_params,
+    #     name="Actice Walker Model",
+    # )
+
+    # page
+
+    
