@@ -1,8 +1,6 @@
-from mesa.experimental.continuous_space.property_layer import PropertyLayer, HasPropertyLayers
+from mesa.experimental.continuous_space.property_layer import PropertyLayer
 
 import matplotlib.pyplot as plt
-from scipy.signal import convolve2d
-import time 
 from mesa.experimental.continuous_space import ContinuousSpaceAgent, ContinuousSpace
 import numpy as np
 from mesa.model import Model 
@@ -10,9 +8,6 @@ from mesa.model import Model
 
 from mesa.visualization import SolaraViz, SpaceRenderer
 from mesa.visualization.components import AgentPortrayalStyle,  PropertyLayerStyle
-import solara
-from matplotlib.figure import Figure
-from mesa.visualization.utils import update_counter
 
 
 
@@ -106,57 +101,50 @@ if __name__ == "__main__":
         default_value=2
     )
 
-    # layer3=PropertyLayer.random_layer(
-    #     name="random_layer",
-    #     data=d,
-    #     bounds=[[0,10], [0,10]],
-    #     resolution=1
-    # )
+    # model.run_for(100)
+    # plotheatmap(model.space.trace_layer.data, "trace_layer")
+    # model.space._attach_property(layer2)
+    # model.run_for(5)
+    # plotheatmap(model.space.buffer_layer.data, "buffer_layer")
+    # plotheatmap(model.space.random_layer.data, "random_layer")
 
-    model.run_for(100)
-    plotheatmap(model.space.trace_layer.data, "trace_layer")
-    model.space._attach_property(layer2)
-    model.run_for(5)
-    plotheatmap(model.space.buffer_layer.data, "buffer_layer")
-    plotheatmap(model.space.random_layer.data, "random_layer")
+    # print(model.space.trace_layer.aggregate(operation=np.mean))
 
-    print(model.space.trace_layer.aggregate(operation=np.mean))
-
-    # def agent_portrayal(agent):
-    #     return AgentPortrayalStyle(size=10, marker='o', color='red')
+    def agent_portrayal(agent):
+        return AgentPortrayalStyle(size=10, marker='o', color='red')
         
 
-    # def propertylayer_portrayal(layer):
-    #     if layer.name=="trace_layer":
-    #         return PropertyLayerStyle(color='blue', alpha=0.8, colorbar=True)
-    #     if layer.name=="random_layer":
-    #         return PropertyLayerStyle(color='green', alpha=0.5, colorbar=True)
+    def propertylayer_portrayal(layer):
+        if layer.name=="trace_layer":
+            return PropertyLayerStyle(color='blue', alpha=0.8, colorbar=True)
+        if layer.name=="random_layer":
+            return PropertyLayerStyle(color='green', alpha=0.5, colorbar=True)
         
         
         
-    # model_params={
-    #     "rng":None,
-    #     "width":10,
-    #     "height":10,
-    #     "n_agents":5
-    # }
+    model_params={
+        "rng":None,
+        "width":10,
+        "height":10,
+        "n_agents":5
+    }
 
-    # renderer = (
-    #     SpaceRenderer(
-    #         model,
-    #         backend="altair",
-    #     )
-    # )
-    # renderer.draw_agents(agent_portrayal)
-    # renderer.draw_propertylayer(propertylayer_portrayal)
+    renderer = (
+        SpaceRenderer(
+            model,
+            backend="altair",
+        )
+    )
+    renderer.draw_agents(agent_portrayal)
+    renderer.draw_propertylayer(propertylayer_portrayal)
 
-    # page = SolaraViz(
-    #     model,
-    #     renderer,
-    #     model_params=model_params,
-    #     name="Actice Walker Model",
-    # )
+    page = SolaraViz(
+        model,
+        renderer,
+        model_params=model_params,
+        name="Actice Walker Model",
+    )
 
-    # page
+    page
 
     
